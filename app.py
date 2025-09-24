@@ -1,9 +1,10 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from optimiser import optimize_route
 from scheduler import WindowCleanerScheduler
+from database import db
 
 app = FastAPI(title="Window Cleaner AI Optimizer", version="1.0.0")
 
@@ -19,6 +20,95 @@ app.add_middleware(
 @app.get("/")
 async def root():
     return {"message": "Window Cleaner AI Optimizer FastAPI Server", "status": "running"}
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint that also tests database connection"""
+    try:
+        # Test database connection
+        test_response = db.client.table("work_schedules").select("count", count="exact").limit(1).execute()
+        return {
+            "status": "healthy",
+            "database": "connected",
+            "message": "FastAPI server and Supabase database are operational"
+        }
+    except Exception as e:
+        return {
+            "status": "degraded", 
+            "database": "error",
+            "message": f"Database connection issue: {str(e)}"
+        }
+
+@app.get("/customers/{user_id}")
+async def get_customers(user_id: str):
+    """Get all customers for a specific user"""
+    try:
+        customers = await db.get_customers(user_id)
+        return {
+            "user_id": user_id,
+            "count": len(customers),
+            "customers": customers
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching customers: {str(e)}")
+
+@app.post('/generate-schedule-from-db/{user_id}')
+async def generate_schedule_from_database(user_id: str):
+    """
+    Generate schedule using data from Supabase database
+    
+    Args:
+        user_id: UUID of the user
+    """
+    try:
+        # Fetch work schedule from database
+        work_schedule = await db.get_work_schedule(user_id)
+        if not work_schedule:
+            raise HTTPException(status_code=404, detail="Work schedule not found for user")
+        
+        # Fetch customers from database  
+        customers = await db.get_customers(user_id)
+        if not customers:
+            raise HTTPException(status_code=404, detail="No customers found for user")
+            
+        # Fetch cleaner profile from database (uses default profile for now)
+        cleaner_profile = await db.get_cleaner_profile(user_id)
+        if not cleaner_profile:
+            # Fallback to default cleaner profile
+            cleaner_profile = {
+                "id": 1,
+                "work_hours": [9, 17],
+                "start_location": {"lat": 51.5, "lng": -0.1}
+            }
+        
+        # Set default constraints (you can make this configurable)
+        constraints = {"min_gap_days": 0, "max_gap_days": 2}
+        
+        # Create scheduler instance
+        scheduler = WindowCleanerScheduler()
+        
+        # Generate schedule with database data
+        full_schedule = scheduler.generate_full_schedule(
+            customers, 
+            cleaner_profile, 
+            work_schedule, 
+            constraints
+        )
+        
+        # Optionally save the generated schedule back to database
+        await db.save_schedule(user_id, full_schedule)
+        
+        return {
+            "schedule": full_schedule,
+            "user_id": user_id,
+            "work_schedule_applied": work_schedule,
+            "total_customers": len(customers)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generating schedule: {str(e)}")
 
 # Pydantic models for request/response
 class Customer(BaseModel):

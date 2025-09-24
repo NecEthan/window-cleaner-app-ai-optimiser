@@ -50,9 +50,8 @@ Thumbs.db
 *.log
 logs/
 
-# Test files
+# Test files (if any are added in the future)
 test_*.py
-simple_test.py
 *_test.py
 
 # Temporary files
