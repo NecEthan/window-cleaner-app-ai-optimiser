@@ -119,6 +119,156 @@ class SupabaseClient:
             print(f"Error creating cleaner profile: {e}")
             return None
     
+    async def save_optimized_schedule(self, user_id: str, work_schedule: Dict[str, Any], schedule_data: Dict[str, Any]) -> str:
+        """
+        Save optimized schedule to database
+        
+        Args:
+            user_id: The user's UUID
+            work_schedule: The work schedule used for optimization
+            schedule_data: The generated schedule data with daily customer assignments
+            
+        Returns:
+            Schedule ID if saved successfully, raises exception otherwise
+        """
+        try:
+            from datetime import datetime
+            
+            # 1. Save/Update work schedule in work_schedules table
+            work_schedule_data = {
+                "user_id": user_id,
+                "monday_hours": work_schedule.get("monday_hours"),
+                "tuesday_hours": work_schedule.get("tuesday_hours"), 
+                "wednesday_hours": work_schedule.get("wednesday_hours"),
+                "thursday_hours": work_schedule.get("thursday_hours"),
+                "friday_hours": work_schedule.get("friday_hours"),
+                "saturday_hours": work_schedule.get("saturday_hours"),
+                "sunday_hours": work_schedule.get("sunday_hours"),
+                "is_active": True,
+                "updated_at": datetime.now().isoformat()
+            }
+            
+            # First, deactivate any existing active schedules
+            self.client.table("work_schedules").update({"is_active": False}).eq("user_id", user_id).execute()
+            
+            # Insert new work schedule
+            work_schedule_response = self.client.table("work_schedules").insert(work_schedule_data).execute()
+            
+            if not work_schedule_response.data:
+                raise Exception("Failed to save work schedule")
+                
+            schedule_id = work_schedule_response.data[0]["id"]
+            
+            # 2. Save daily customer assignments
+            await self._save_daily_assignments(user_id, schedule_data)
+            
+            print(f"✅ Optimized schedule saved with ID: {schedule_id}")
+            return schedule_id
+            
+        except Exception as e:
+            print(f"❌ Error saving optimized schedule: {e}")
+            raise Exception(f"Failed to save optimized schedule: {str(e)}")
+
+    async def _save_daily_assignments(self, user_id: str, schedule_data: Dict[str, Any]):
+        """
+        Save daily customer assignments to routes and route_jobs tables
+        
+        Args:
+            user_id: The user's UUID
+            schedule_data: The schedule data containing daily assignments
+        """
+        try:
+            from datetime import datetime
+            
+            # Clear existing future routes for this user to avoid duplicates
+            today = datetime.now().date().isoformat()
+            self.client.table("routes").delete().eq("user_id", user_id).gte("date", today).execute()
+            
+            for date_str, day_data in schedule_data.items():
+                customers = day_data.get("customers", [])
+                
+                if not customers:
+                    continue  # Skip days with no customers
+                
+                # Create route for this day
+                route_data = {
+                    "user_id": user_id,
+                    "date": date_str,
+                    "status": "scheduled",
+                    "estimated_duration": day_data.get("total_duration_minutes", 0),
+                    "estimated_revenue": day_data.get("total_revenue", 0),
+                    "estimated_travel_time": day_data.get("estimated_travel_time", 0),
+                    "max_work_hours": day_data.get("max_hours", 8),
+                    "day_name": day_data.get("day", ""),
+                    "created_at": datetime.now().isoformat(),
+                    "updated_at": datetime.now().isoformat()
+                }
+                
+                route_response = self.client.table("routes").insert(route_data).execute()
+                
+                if route_response.data:
+                    route_id = route_response.data[0]["id"]
+                    
+                    # Add customer assignments for this route
+                    route_jobs = []
+                    for customer in customers:
+                        job_data = {
+                            "route_id": route_id,
+                            "customer_id": customer["id"],
+                            "visit_order": customer.get("route_order", 1),
+                            "estimated_duration": customer.get("estimated_duration", 30),
+                            "price": customer.get("price", 0),
+                            "customer_name": customer.get("name", ""),
+                            "customer_address": customer.get("address", ""),
+                            "completed": False,
+                            "status": "scheduled",
+                            "created_at": datetime.now().isoformat()
+                        }
+                        route_jobs.append(job_data)
+                    
+                    if route_jobs:
+                        self.client.table("route_jobs").insert(route_jobs).execute()
+                        print(f"📅 Saved {len(route_jobs)} customer assignments for {date_str}")
+            
+        except Exception as e:
+            print(f"❌ Error saving daily assignments: {e}")
+            raise Exception(f"Failed to save daily assignments: {str(e)}")
+
+    async def get_todays_schedule(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get today's scheduled customers for a user
+        
+        Args:
+            user_id: The user's UUID
+            
+        Returns:
+            Today's schedule with customers or None if no schedule
+        """
+        try:
+            from datetime import datetime
+            today = datetime.now().date().isoformat()
+            
+            # Get today's route
+            route_response = self.client.table("routes").select("*").eq("user_id", user_id).eq("date", today).execute()
+            
+            if not route_response.data:
+                return None
+                
+            route = route_response.data[0]
+            
+            # Get customer assignments for today's route
+            jobs_response = self.client.table("route_jobs").select("*").eq("route_id", route["id"]).order("visit_order").execute()
+            
+            return {
+                "date": today,
+                "route": route,
+                "customers": jobs_response.data if jobs_response.data else []
+            }
+            
+        except Exception as e:
+            print(f"Error fetching today's schedule: {e}")
+            return None
+
     async def save_schedule(self, user_id: str, schedule_data: Dict[str, Any]) -> bool:
         """
         Save generated schedule to database using your routes and route_jobs tables

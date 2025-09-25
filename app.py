@@ -1,12 +1,12 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
-from optimiser import optimize_route, create_2_week_schedule
-from scheduler import WindowCleanerScheduler
-from database import db
+from typing import List, Optional, Dict
+from optimiser import create_2_week_schedule
+from database import SupabaseClient
 
 app = FastAPI(title="Window Cleaner AI Optimizer", version="1.0.0")
+db = SupabaseClient()
 
 # Add CORS middleware
 app.add_middleware(
@@ -39,43 +39,24 @@ async def health_check():
             "message": f"Database connection issue: {str(e)}"
         }
 
-@app.get("/customers/{user_id}")
-async def get_customers(user_id: str):
-    """Get all customers for a specific user"""
-    try:
-        customers = await db.get_customers(user_id)
-        return {
-            "user_id": user_id,
-            "count": len(customers),
-            "customers": customers
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching customers: {str(e)}")
+
 
 @app.post("/create-1week-schedule/{user_id}")
 async def create_1week_schedule(user_id: str):
     """Create optimized 1-week schedule (8 days starting from today) from database data"""
     try:
         # Fetch work schedule from database
-        work_schedule = await db.get_work_schedule(user_id)
+        work_schedule = db.get_work_schedule(user_id)
         if not work_schedule:
             raise HTTPException(status_code=404, detail="Work schedule not found for user")
         
         # Fetch customers from database  
-        customers = await db.get_customers(user_id)
+        customers = db.get_customers(user_id)
         if not customers:
             raise HTTPException(status_code=404, detail="No customers found for user")
             
-        # Fetch cleaner profile from database
-        cleaner_profile = await db.get_cleaner_profile(user_id)
-        if not cleaner_profile:
-            # Use default cleaner location
-            cleaner_start_location = (51.5, -0.1)  # London default
-        else:
-            cleaner_start_location = (
-                cleaner_profile['start_location']['lat'],
-                cleaner_profile['start_location']['lng']
-            )
+        # Use default cleaner location (London center)
+        cleaner_start_location = (51.5074, -0.1278)
         
         # Create 1-week optimized schedule (8 days starting from today)
         schedule_result = create_2_week_schedule(
@@ -84,8 +65,14 @@ async def create_1week_schedule(user_id: str):
             cleaner_start_location=cleaner_start_location
         )
         
-        # Save schedule to database (optional)
-        await db.save_schedule(user_id, schedule_result['schedule'])
+        # Save optimized schedule to database
+        try:
+            schedule_id = await db.save_optimized_schedule(user_id, work_schedule, schedule_result['schedule'])
+            print(f"✅ Schedule saved to database with ID: {schedule_id}")
+        except Exception as save_error:
+            print(f"⚠️ Warning: Failed to save schedule to database: {save_error}")
+            # Continue without failing the request
+
         
         return {
             "user_id": user_id,
@@ -93,7 +80,8 @@ async def create_1week_schedule(user_id: str):
             "summary": schedule_result['summary'],
             "time_savings_summary": schedule_result.get('time_savings_summary', {}),
             "unscheduled_customers": len(schedule_result['unscheduled_customers']),
-            "message": "1-week schedule (8 days) created successfully"
+            "schedule_saved_to_db": True,
+            "message": "1-week schedule (8 days) created successfully and saved to database"
         }
         
     except Exception as e:
@@ -104,126 +92,8 @@ async def create_2week_schedule_redirect(user_id: str):
     """Backward compatibility - redirects to 1-week schedule endpoint"""
     return await create_1week_schedule(user_id)
 
-@app.get("/time-savings/{user_id}")
-async def get_time_savings_analysis(user_id: str):
-    """Get detailed time savings analysis for a user's route optimization"""
-    try:
-        # Get data from database
-        work_schedule = await db.get_work_schedule(user_id)
-        customers = await db.get_customers(user_id)
-        
-        if not work_schedule:
-            raise HTTPException(status_code=404, detail="Work schedule not found")
-        
-        if not customers:
-            raise HTTPException(status_code=404, detail="No customers found")
-        
-        # Default cleaner location (you can make this configurable)
-        cleaner_start_location = (51.5074, -0.1278)  # London center as default
-        
-        # Calculate time savings for all customers
-        from optimiser import calculate_time_savings
-        time_savings = calculate_time_savings(customers, cleaner_start_location)
-        
-        # Also get 1-week schedule with savings
-        full_schedule = create_2_week_schedule(customers, work_schedule, cleaner_start_location)
-        
-        return {
-            "user_id": user_id,
-            "total_customers": len(customers),
-            "daily_time_savings": time_savings,
-            "one_week_savings": full_schedule.get('time_savings_summary', {}),
-            "efficiency_analysis": {
-                "average_time_saved_per_customer": round(time_savings['time_savings_minutes'] / max(len(customers), 1), 2),
-                "potential_monthly_savings_hours": round(time_savings['time_savings_hours'] * 4, 1),
-                "potential_annual_fuel_savings": round(time_savings['fuel_savings_estimate_gbp'] * 52, 2)
-            }
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error calculating time savings: {str(e)}")
-
-@app.post('/generate-schedule-from-db/{user_id}')
-async def generate_schedule_from_database(user_id: str):
-    """
-    Generate schedule using data from Supabase database
-    
-    Args:
-        user_id: UUID of the user
-    """
-    try:
-        # Fetch work schedule from database
-        work_schedule = await db.get_work_schedule(user_id)
-        if not work_schedule:
-            raise HTTPException(status_code=404, detail="Work schedule not found for user")
-        
-        # Fetch customers from database  
-        customers = await db.get_customers(user_id)
-        if not customers:
-            raise HTTPException(status_code=404, detail="No customers found for user")
-            
-        # Fetch cleaner profile from database (uses default profile for now)
-        cleaner_profile = await db.get_cleaner_profile(user_id)
-        if not cleaner_profile:
-            # Fallback to default cleaner profile
-            cleaner_profile = {
-                "id": 1,
-                "work_hours": [9, 17],
-                "start_location": {"lat": 51.5, "lng": -0.1}
-            }
-        
-        # Set default constraints (you can make this configurable)
-        constraints = {"min_gap_days": 0, "max_gap_days": 2}
-        
-        # Create scheduler instance
-        scheduler = WindowCleanerScheduler()
-        
-        # Generate schedule with database data
-        full_schedule = scheduler.generate_full_schedule(
-            customers, 
-            cleaner_profile, 
-            work_schedule, 
-            constraints
-        )
-        
-        # Optionally save the generated schedule back to database
-        await db.save_schedule(user_id, full_schedule)
-        
-        return {
-            "schedule": full_schedule,
-            "user_id": user_id,
-            "work_schedule_applied": work_schedule,
-            "total_customers": len(customers)
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error generating schedule: {str(e)}")
-
-# Pydantic models for request/response
-class Customer(BaseModel):
-    id: int
-    lat: float
-    lng: float
-    last_cleaned: str
-    frequency_days: int
-
-class Location(BaseModel):
-    lat: float
-    lng: float
-
-class Cleaner(BaseModel):
-    id: int
-    work_hours: List[int]
-    start_location: Location
-
-class Constraints(BaseModel):
-    min_gap_days: int
-    max_gap_days: int
-
-class WorkSchedule(BaseModel):
-    user_id: Optional[str] = None
+# Pydantic model for work schedule input
+class WorkScheduleInput(BaseModel):
     monday_hours: Optional[float] = None
     tuesday_hours: Optional[float] = None
     wednesday_hours: Optional[float] = None
@@ -231,46 +101,173 @@ class WorkSchedule(BaseModel):
     friday_hours: Optional[float] = None
     saturday_hours: Optional[float] = None
     sunday_hours: Optional[float] = None
-    total_weekly_hours: Optional[float] = None
-    working_days_count: Optional[int] = None
-    is_active: Optional[bool] = True
 
-class ScheduleRequest(BaseModel):
-    customers: List[Customer]
-    cleaner: Cleaner
-    constraints: Constraints
-    work_schedule: Optional[WorkSchedule] = None
+class CustomerInput(BaseModel):
+    id: str
+    name: str
+    address: str
+    lat: float
+    lng: float
+    price: float
+    estimated_duration: int
+    last_cleaned: str
+    frequency_days: int
 
-class SimpleRouteRequest(BaseModel):
-    customers: List[Customer]
+class ScheduleRequestWithData(BaseModel):
+    work_schedule: WorkScheduleInput
+    customers: List[CustomerInput]
+    cleaner_start_location: Optional[Dict[str, float]] = {"lat": 51.5074, "lng": -0.1278}
 
-@app.post('/generate-schedule')
-async def generate_schedule(request: ScheduleRequest):
-    # Convert Pydantic models to dictionaries for the scheduler
-    customers = [customer.model_dump() for customer in request.customers]
-    cleaner = request.cleaner.model_dump()
-    constraints = request.constraints.model_dump()
-    work_schedule = request.work_schedule.model_dump() if request.work_schedule else None
+@app.post("/create-schedule-with-data/{user_id}")
+async def create_schedule_with_data(user_id: str, request: ScheduleRequestWithData):
+    """
+    Create optimized 1-week schedule with work schedule and customer data passed in the request
+    This endpoint allows Express/frontend to pass all necessary data directly
+    """
+    try:
+        # Convert Pydantic models to dictionaries
+        work_schedule = request.work_schedule.model_dump()
+        customers = [customer.model_dump() for customer in request.customers]
+        
+        # Get cleaner start location
+        cleaner_start_location = (
+            request.cleaner_start_location["lat"],
+            request.cleaner_start_location["lng"]
+        )
+        
+        # Create 1-week optimized schedule
+        schedule_result = create_2_week_schedule(
+            customers=customers,
+            work_schedule=work_schedule,
+            cleaner_start_location=cleaner_start_location
+        )
+        
+        return {
+            "user_id": user_id,
+            "work_schedule_used": work_schedule,
+            "total_customers_provided": len(customers),
+            "schedule": schedule_result['schedule'],
+            "summary": schedule_result['summary'],
+            "time_savings_summary": schedule_result.get('time_savings_summary', {}),
+            "unscheduled_customers": len(schedule_result.get('unscheduled_customers', [])),
+            "message": "1-week schedule (8 days) created successfully with provided data"
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error creating schedule with data: {str(e)}")
+
+# Pydantic model for Express backend integration
+class ExpressScheduleRequest(BaseModel):
+    work_schedule: WorkScheduleInput
+    cleaner_start_location: Optional[Dict[str, float]] = {"lat": 51.5074, "lng": -0.1278}
+
+@app.post("/create-schedule-from-express/{user_id}")
+async def create_schedule_from_express(user_id: str, request: ExpressScheduleRequest):
+    """
+    Express Backend Integration Endpoint
     
-    # Create scheduler instance
-    scheduler = WindowCleanerScheduler()
+    Receives work schedule from Express backend, fetches customers from database,
+    optimizes the schedule, and returns optimized customer schedule back to Express.
     
-    # Generate full multi-day schedule with work schedule
-    full_schedule = scheduler.generate_full_schedule(customers, cleaner, work_schedule, constraints)
-    
-    return {"schedule": full_schedule}
+    Perfect for Express → FastAPI → Express integration workflow.
+    """
+    try:
+        # Convert work schedule from Express
+        work_schedule = request.work_schedule.model_dump()
+        
+        # Fetch customers from database using the user_id
+        customers = await db.get_customers(user_id)
+        if not customers:
+            raise HTTPException(status_code=404, detail="No customers found for user in database")
+        
+        # Get cleaner start location from Express request
+        cleaner_start_location = (
+            request.cleaner_start_location["lat"],
+            request.cleaner_start_location["lng"]
+        )
+        
+        # Create optimized 1-week schedule
+        schedule_result = create_2_week_schedule(
+            customers=customers,
+            work_schedule=work_schedule,
+            cleaner_start_location=cleaner_start_location
+        )
+        
+        # Save optimized schedule to database
+        try:
+            schedule_id = await db.save_optimized_schedule(user_id, work_schedule, schedule_result['schedule'])
+            print(f"✅ Express integration: Schedule saved to database with ID: {schedule_id}")
+            schedule_saved = True
+        except Exception as save_error:
+            print(f"⚠️ Warning: Failed to save schedule to database: {save_error}")
+            schedule_saved = False
+            # Continue without failing the request
+        
+        return {
+            "user_id": user_id,
+            "express_integration": True,
+            "work_schedule_received": work_schedule,
+            "customers_from_database": len(customers),
+            "schedule": schedule_result['schedule'],
+            "summary": schedule_result['summary'],
+            "time_savings_summary": schedule_result.get('time_savings_summary', {}),
+            "unscheduled_customers": len(schedule_result.get('unscheduled_customers', [])),
+            "schedule_saved_to_db": schedule_saved,
+            "message": "Express → FastAPI integration successful! Schedule optimized and saved to database"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Express integration error: {str(e)}")
 
-# Keep the original simple route optimizer for backward compatibility
-@app.post('/generate-simple-route')
-async def generate_simple_route(request: SimpleRouteRequest):
-    customers = [customer.model_dump() for customer in request.customers]
-    # extract lat/lng
-    locations = [(c['lat'], c['lng']) for c in customers]
-    order = optimize_route(locations)
-    # return ordered schedule
-    schedule = [{"customer_id": customers[i]["id"], "order": idx+1} for idx, i in enumerate(order)]
-    return {"schedule": schedule}
+@app.get("/todays-schedule/{user_id}")
+async def get_todays_schedule(user_id: str):
+    """
+    Get today's scheduled customers from the database
+    
+    This endpoint retrieves the customers that are scheduled to be cleaned today
+    based on the previously saved optimized schedule.
+    """
+    try:
+        todays_schedule = await db.get_todays_schedule(user_id)
+        
+        if not todays_schedule:
+            return {
+                "user_id": user_id,
+                "date": None,
+                "customers": [],
+                "message": "No customers scheduled for today"
+            }
+        
+        return {
+            "user_id": user_id,
+            "date": todays_schedule["date"],
+            "route_info": {
+                "estimated_duration": todays_schedule["route"]["estimated_duration"],
+                "estimated_revenue": todays_schedule["route"]["estimated_revenue"],
+                "max_work_hours": todays_schedule["route"]["max_work_hours"],
+                "day_name": todays_schedule["route"]["day_name"]
+            },
+            "customers": todays_schedule["customers"],
+            "total_customers": len(todays_schedule["customers"]),
+            "message": f"Today's schedule: {len(todays_schedule['customers'])} customers to visit"
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving today's schedule: {str(e)}")
+
+
 
 if __name__ == '__main__':
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=5000)
+    print("🚀 Starting Window Cleaner AI Optimizer...")
+    print("📍 Server will be available at: http://127.0.0.1:5003")
+    print("📋 Essential Endpoints:")
+    print("   • GET  /health - Health check")
+    print("   • POST /create-1week-schedule/{user_id} - Generate schedule from database")
+    print("   • POST /create-schedule-with-data/{user_id} - Generate schedule with provided data")
+    print("   • POST /create-schedule-from-express/{user_id} - Express backend integration ⭐")
+    print("   • GET  /todays-schedule/{user_id} - Get today's scheduled customers 📅")
+    print("   • POST /create-2week-schedule/{user_id} - Backward compatibility endpoint")
+    uvicorn.run(app, host="127.0.0.1", port=5003)
