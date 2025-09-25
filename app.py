@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
-from optimiser import optimize_route
+from optimiser import optimize_route, create_2_week_schedule
 from scheduler import WindowCleanerScheduler
 from database import db
 
@@ -51,6 +51,52 @@ async def get_customers(user_id: str):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching customers: {str(e)}")
+
+@app.post("/create-2week-schedule/{user_id}")
+async def create_2week_schedule(user_id: str):
+    """Create optimized 2-week schedule from database data"""
+    try:
+        # Fetch work schedule from database
+        work_schedule = await db.get_work_schedule(user_id)
+        if not work_schedule:
+            raise HTTPException(status_code=404, detail="Work schedule not found for user")
+        
+        # Fetch customers from database  
+        customers = await db.get_customers(user_id)
+        if not customers:
+            raise HTTPException(status_code=404, detail="No customers found for user")
+            
+        # Fetch cleaner profile from database
+        cleaner_profile = await db.get_cleaner_profile(user_id)
+        if not cleaner_profile:
+            # Use default cleaner location
+            cleaner_start_location = (51.5, -0.1)  # London default
+        else:
+            cleaner_start_location = (
+                cleaner_profile['start_location']['lat'],
+                cleaner_profile['start_location']['lng']
+            )
+        
+        # Create 2-week optimized schedule
+        schedule_result = create_2_week_schedule(
+            customers=customers,
+            work_schedule=work_schedule,
+            cleaner_start_location=cleaner_start_location
+        )
+        
+        # Save schedule to database (optional)
+        await db.save_schedule(user_id, schedule_result['schedule'])
+        
+        return {
+            "user_id": user_id,
+            "schedule": schedule_result['schedule'],
+            "summary": schedule_result['summary'],
+            "unscheduled_customers": len(schedule_result['unscheduled_customers']),
+            "message": "2-week schedule created successfully"
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error creating schedule: {str(e)}")
 
 @app.post('/generate-schedule-from-db/{user_id}')
 async def generate_schedule_from_database(user_id: str):
