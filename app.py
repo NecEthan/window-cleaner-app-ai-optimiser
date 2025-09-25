@@ -52,9 +52,9 @@ async def get_customers(user_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching customers: {str(e)}")
 
-@app.post("/create-2week-schedule/{user_id}")
-async def create_2week_schedule(user_id: str):
-    """Create optimized 2-week schedule from database data"""
+@app.post("/create-1week-schedule/{user_id}")
+async def create_1week_schedule(user_id: str):
+    """Create optimized 1-week schedule (8 days starting from today) from database data"""
     try:
         # Fetch work schedule from database
         work_schedule = await db.get_work_schedule(user_id)
@@ -77,7 +77,7 @@ async def create_2week_schedule(user_id: str):
                 cleaner_profile['start_location']['lng']
             )
         
-        # Create 2-week optimized schedule
+        # Create 1-week optimized schedule (8 days starting from today)
         schedule_result = create_2_week_schedule(
             customers=customers,
             work_schedule=work_schedule,
@@ -93,11 +93,16 @@ async def create_2week_schedule(user_id: str):
             "summary": schedule_result['summary'],
             "time_savings_summary": schedule_result.get('time_savings_summary', {}),
             "unscheduled_customers": len(schedule_result['unscheduled_customers']),
-            "message": "2-week schedule created successfully"
+            "message": "1-week schedule (8 days) created successfully"
         }
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creating schedule: {str(e)}")
+
+@app.post("/create-2week-schedule/{user_id}")
+async def create_2week_schedule_redirect(user_id: str):
+    """Backward compatibility - redirects to 1-week schedule endpoint"""
+    return await create_1week_schedule(user_id)
 
 @app.get("/time-savings/{user_id}")
 async def get_time_savings_analysis(user_id: str):
@@ -120,14 +125,14 @@ async def get_time_savings_analysis(user_id: str):
         from optimiser import calculate_time_savings
         time_savings = calculate_time_savings(customers, cleaner_start_location)
         
-        # Also get 2-week schedule with savings
+        # Also get 1-week schedule with savings
         full_schedule = create_2_week_schedule(customers, work_schedule, cleaner_start_location)
         
         return {
             "user_id": user_id,
             "total_customers": len(customers),
             "daily_time_savings": time_savings,
-            "two_week_savings": full_schedule.get('time_savings_summary', {}),
+            "one_week_savings": full_schedule.get('time_savings_summary', {}),
             "efficiency_analysis": {
                 "average_time_saved_per_customer": round(time_savings['time_savings_minutes'] / max(len(customers), 1), 2),
                 "potential_monthly_savings_hours": round(time_savings['time_savings_hours'] * 4, 1),

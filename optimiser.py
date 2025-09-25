@@ -50,7 +50,7 @@ def optimize_route(locations):
 
 def create_2_week_schedule(customers: List[Dict], work_schedule: Dict, cleaner_start_location: Tuple[float, float]) -> Dict[str, Any]:
     """
-    Create an optimized 2-week schedule for window cleaning
+    Create an optimized 1-week schedule for window cleaning (8 days starting from today)
     
     Args:
         customers: List of customer dicts with id, name, address, lat, lng, frequency_days, 
@@ -59,22 +59,22 @@ def create_2_week_schedule(customers: List[Dict], work_schedule: Dict, cleaner_s
         cleaner_start_location: Tuple of (lat, lng) for cleaner's starting location
     
     Returns:
-        Dict with schedule for next 2 weeks including optimized routes
+        Dict with schedule for next 8 days (1 week) including optimized routes
     """
     
     # Get working days and hours
     working_days = _get_working_days(work_schedule)
     
-    # Generate customers that need cleaning in next 2 weeks
+    # Generate customers that need cleaning in next week (8 days)
     customers_needing_service = _filter_customers_by_urgency(customers)
     
-    # Create 2-week schedule
+    # Create 1-week schedule (8 days starting from today)
     schedule = {}
     total_time_saved = 0
     total_fuel_saved = 0
     today = datetime.now().date()
     
-    for i in range(14):  # Next 2 weeks
+    for i in range(8):  # Next 8 days (1 week starting from today)
         current_date = today + timedelta(days=i)
         day_name = current_date.strftime('%A').lower()
         
