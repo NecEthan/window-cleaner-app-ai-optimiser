@@ -91,12 +91,52 @@ async def create_2week_schedule(user_id: str):
             "user_id": user_id,
             "schedule": schedule_result['schedule'],
             "summary": schedule_result['summary'],
+            "time_savings_summary": schedule_result.get('time_savings_summary', {}),
             "unscheduled_customers": len(schedule_result['unscheduled_customers']),
             "message": "2-week schedule created successfully"
         }
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creating schedule: {str(e)}")
+
+@app.get("/time-savings/{user_id}")
+async def get_time_savings_analysis(user_id: str):
+    """Get detailed time savings analysis for a user's route optimization"""
+    try:
+        # Get data from database
+        work_schedule = await db.get_work_schedule(user_id)
+        customers = await db.get_customers(user_id)
+        
+        if not work_schedule:
+            raise HTTPException(status_code=404, detail="Work schedule not found")
+        
+        if not customers:
+            raise HTTPException(status_code=404, detail="No customers found")
+        
+        # Default cleaner location (you can make this configurable)
+        cleaner_start_location = (51.5074, -0.1278)  # London center as default
+        
+        # Calculate time savings for all customers
+        from optimiser import calculate_time_savings
+        time_savings = calculate_time_savings(customers, cleaner_start_location)
+        
+        # Also get 2-week schedule with savings
+        full_schedule = create_2_week_schedule(customers, work_schedule, cleaner_start_location)
+        
+        return {
+            "user_id": user_id,
+            "total_customers": len(customers),
+            "daily_time_savings": time_savings,
+            "two_week_savings": full_schedule.get('time_savings_summary', {}),
+            "efficiency_analysis": {
+                "average_time_saved_per_customer": round(time_savings['time_savings_minutes'] / max(len(customers), 1), 2),
+                "potential_monthly_savings_hours": round(time_savings['time_savings_hours'] * 4, 1),
+                "potential_annual_fuel_savings": round(time_savings['fuel_savings_estimate_gbp'] * 52, 2)
+            }
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error calculating time savings: {str(e)}")
 
 @app.post('/generate-schedule-from-db/{user_id}')
 async def generate_schedule_from_database(user_id: str):

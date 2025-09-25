@@ -70,6 +70,8 @@ def create_2_week_schedule(customers: List[Dict], work_schedule: Dict, cleaner_s
     
     # Create 2-week schedule
     schedule = {}
+    total_time_saved = 0
+    total_fuel_saved = 0
     today = datetime.now().date()
     
     for i in range(14):  # Next 2 weeks
@@ -101,8 +103,13 @@ def create_2_week_schedule(customers: List[Dict], work_schedule: Dict, cleaner_s
                     'route_order': optimized_route['order'],
                     'total_duration_minutes': optimized_route['total_duration'],
                     'total_revenue': optimized_route['total_revenue'],
-                    'estimated_travel_time': optimized_route['travel_time']
+                    'estimated_travel_time': optimized_route['travel_time'],
+                    'time_savings': optimized_route['time_savings']
                 }
+                
+                # Accumulate savings
+                total_time_saved += optimized_route['time_savings']['time_savings_minutes']
+                total_fuel_saved += optimized_route['time_savings']['fuel_savings_estimate_gbp']
                 
                 # Remove assigned customers from pool
                 assigned_ids = [c['id'] for c in daily_customers]
@@ -111,6 +118,13 @@ def create_2_week_schedule(customers: List[Dict], work_schedule: Dict, cleaner_s
     return {
         'schedule': schedule,
         'summary': _create_schedule_summary(schedule),
+        'time_savings_summary': {
+            'total_time_saved_minutes': round(total_time_saved, 1),
+            'total_time_saved_hours': round(total_time_saved / 60, 2),
+            'total_fuel_saved_gbp': round(total_fuel_saved, 2),
+            'extra_customers_per_week': int(total_time_saved / 45) if total_time_saved > 0 else 0,
+            'weekly_efficiency_gain': f"{round((total_time_saved / (sum([len(day['customers']) for day in schedule.values()]) * 45)) * 100, 1)}%" if schedule else "0%"
+        },
         'unscheduled_customers': customers_needing_service
     }
 
@@ -192,14 +206,18 @@ def _assign_customers_to_day(customers: List[Dict], date: datetime.date, max_hou
 
 
 def _optimize_daily_route(customers: List[Dict], cleaner_start_location: Tuple[float, float]) -> Dict:
-    """Optimize route for a single day's customers"""
+    """Optimize route for a single day's customers with time savings analysis"""
     if not customers:
         return {
             'customers': [],
             'order': [],
             'total_duration': 0,
             'total_revenue': 0,
-            'travel_time': 0
+            'travel_time': 0,
+            'time_savings': {
+                'time_savings_minutes': 0,
+                'efficiency_improvement_percent': 0
+            }
         }
     
     # Prepare locations (cleaner start + customer locations)
@@ -219,19 +237,26 @@ def _optimize_daily_route(customers: List[Dict], cleaner_start_location: Tuple[f
         customer_idx = i - 1  # Adjust for cleaner start location
         if 0 <= customer_idx < len(customers):
             customer = customers[customer_idx]
-            optimized_customers.append(customer)
+            optimized_customers.append({
+                **customer,
+                'route_order': len(optimized_customers) + 1  # Add route position
+            })
             total_duration += customer['estimated_duration']
             total_revenue += customer['price']
     
-    # Estimate travel time (rough calculation)
-    estimated_travel_time = len(customers) * 10  # 10 min average between customers
+    # Calculate time savings
+    time_savings = calculate_time_savings(customers, cleaner_start_location)
+    
+    # Calculate actual travel time
+    actual_travel_time = _calculate_actual_travel_time(customers, cleaner_start_location, optimized=True)
     
     return {
         'customers': optimized_customers,
         'order': route_order,
         'total_duration': total_duration,
         'total_revenue': total_revenue,
-        'travel_time': estimated_travel_time
+        'travel_time': round(actual_travel_time, 1),
+        'time_savings': time_savings
     }
 
 
@@ -256,3 +281,99 @@ def _create_schedule_summary(schedule: Dict) -> Dict:
         'average_customers_per_day': round(total_customers / max(working_days, 1), 1),
         'average_revenue_per_day': round(total_revenue / max(working_days, 1), 2)
     }
+
+
+def calculate_time_savings(customers: List[Dict], cleaner_start_location: Tuple[float, float]) -> Dict[str, Any]:
+    """
+    Calculate time savings between optimized vs non-optimized routes
+    
+    Returns:
+        Dict with time savings analysis including travel time comparison
+    """
+    if not customers or len(customers) < 2:
+        return {
+            'time_savings_minutes': 0,
+            'time_savings_hours': 0,
+            'fuel_savings_estimate_gbp': 0,
+            'efficiency_improvement_percent': 0
+        }
+    
+    # Calculate optimized route travel time
+    optimized_travel_time = _calculate_actual_travel_time(customers, cleaner_start_location, optimized=True)
+    
+    # Calculate non-optimized route travel time (customers in original order)
+    unoptimized_travel_time = _calculate_actual_travel_time(customers, cleaner_start_location, optimized=False)
+    
+    # Calculate savings
+    time_saved_minutes = unoptimized_travel_time - optimized_travel_time
+    time_saved_hours = time_saved_minutes / 60
+    
+    # Estimate fuel savings (rough estimate: 1 minute driving = £0.50 fuel cost)
+    fuel_savings = time_saved_minutes * 0.50
+    
+    # Calculate efficiency improvement percentage
+    efficiency_improvement = (time_saved_minutes / max(unoptimized_travel_time, 1)) * 100
+    
+    return {
+        'optimized_travel_time_minutes': round(optimized_travel_time, 1),
+        'unoptimized_travel_time_minutes': round(unoptimized_travel_time, 1),
+        'time_savings_minutes': round(time_saved_minutes, 1),
+        'time_savings_hours': round(time_saved_hours, 2),
+        'fuel_savings_estimate_gbp': round(fuel_savings, 2),
+        'efficiency_improvement_percent': round(efficiency_improvement, 1),
+        'extra_customers_possible': int(time_saved_minutes / 45) if time_saved_minutes > 0 else 0  # Assuming 45min per customer average
+    }
+
+
+def _calculate_actual_travel_time(customers: List[Dict], cleaner_start_location: Tuple[float, float], optimized: bool = True) -> float:
+    """
+    Calculate actual travel time for a route
+    
+    Args:
+        customers: List of customer locations
+        cleaner_start_location: Starting point
+        optimized: If True, use optimized route order. If False, use original order
+    
+    Returns:
+        Total travel time in minutes
+    """
+    if not customers:
+        return 0
+    
+    # Import geopy here to avoid circular imports
+    from geopy.distance import geodesic
+    
+    # Prepare locations
+    locations = [cleaner_start_location]
+    for customer in customers:
+        locations.append((customer['lat'], customer['lng']))
+    
+    if optimized:
+        # Get optimal route order
+        route_order = optimize_route(locations)
+    else:
+        # Use original order (non-optimized)
+        route_order = list(range(len(locations)))
+    
+    # Calculate total travel distance
+    total_distance_meters = 0
+    
+    for i in range(len(route_order) - 1):
+        from_idx = route_order[i]
+        to_idx = route_order[i + 1]
+        
+        if 0 <= from_idx < len(locations) and 0 <= to_idx < len(locations):
+            distance = geodesic(locations[from_idx], locations[to_idx]).meters
+            total_distance_meters += distance
+    
+    # Convert distance to travel time
+    # Assuming average speed of 25 km/h in urban areas (accounting for traffic, stops, parking)
+    avg_speed_kmh = 25
+    avg_speed_mps = (avg_speed_kmh * 1000) / 60  # meters per minute
+    
+    total_travel_time_minutes = total_distance_meters / avg_speed_mps
+    
+    # Add buffer time for parking, walking to door, etc. (2 minutes per stop)
+    buffer_time = len(customers) * 2
+    
+    return total_travel_time_minutes + buffer_time
