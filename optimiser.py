@@ -48,7 +48,7 @@ def optimize_route(locations):
     return order
 
 
-def create_2_week_schedule(customers: List[Dict], work_schedule: Dict, cleaner_start_location: Tuple[float, float]) -> Dict[str, Any]:
+def create_2_week_schedule(customers: List[Dict], work_schedule: Dict, cleaner_start_location: Tuple[float, float], protect_near_dates: bool = False) -> Dict[str, Any]:
     """
     Create an optimized 1-week schedule for window cleaning (8 days starting from today)
     
@@ -57,6 +57,7 @@ def create_2_week_schedule(customers: List[Dict], work_schedule: Dict, cleaner_s
                   last_cleaned, estimated_duration, price
         work_schedule: Dict with day_hours like {'monday_hours': 8, 'tuesday_hours': 6, ...}
         cleaner_start_location: Tuple of (lat, lng) for cleaner's starting location
+        protect_near_dates: If True, skip today and tomorrow (for returning users)
     
     Returns:
         Dict with schedule for next 8 days (1 week) including optimized routes
@@ -77,6 +78,26 @@ def create_2_week_schedule(customers: List[Dict], work_schedule: Dict, cleaner_s
     for i in range(8):  # Next 8 days (1 week starting from today)
         current_date = today + timedelta(days=i)
         day_name = current_date.strftime('%A').lower()
+        
+        # 🛡️ SMART DATE PROTECTION: Skip today/tomorrow if protect_near_dates is True
+        if protect_near_dates and i < 2:  # Skip day 0 (today) and day 1 (tomorrow)
+            schedule[current_date.strftime('%Y-%m-%d')] = {
+                'date': current_date.strftime('%Y-%m-%d'),
+                'day': current_date.strftime('%A'),
+                'max_hours': 0,
+                'customers': [],
+                'route_order': [],
+                'total_duration_minutes': 0,
+                'total_revenue': 0,
+                'estimated_travel_time': 0,
+                'time_savings': {
+                    'time_savings_minutes': 0,
+                    'efficiency_improvement_percent': 0
+                },
+                'protected': True,
+                'message': f'Protected - Cannot optimize {current_date.strftime("%A")} (too close to cleaner schedule)'
+            }
+            continue
         
         if f"{day_name}_hours" in working_days:
             max_hours = working_days[f"{day_name}_hours"]

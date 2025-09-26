@@ -169,9 +169,31 @@ class SupabaseClient:
             print(f"❌ Error saving optimized schedule: {e}")
             raise Exception(f"Failed to save optimized schedule: {str(e)}")
 
+    async def is_first_time_user(self, user_id: str) -> bool:
+        """
+        Check if this is the first time user is optimizing (no existing user_assignments)
+        
+        Args:
+            user_id: The user's UUID
+            
+        Returns:
+            True if this is first-time user, False if they have existing schedules
+        """
+        try:
+            response = self.client.table("user_assignments").select("id").eq("user_id", user_id).limit(1).execute()
+            
+            print(f"🔍 First-time check for user {user_id}: Found {len(response.data)} existing assignments")
+            
+            # If no existing assignments, this is a first-time user
+            return len(response.data) == 0
+            
+        except Exception as e:
+            print(f"Error checking first-time user status: {e}")
+            return True  # Default to first-time if we can't determine
+
     async def _save_daily_assignments(self, user_id: str, schedule_data: Dict[str, Any]):
         """
-        Save daily customer assignments to routes and route_jobs tables
+        Save daily customer assignments to user_assignments table (simplified single-table approach)
         
         Args:
             user_id: The user's UUID
@@ -180,9 +202,9 @@ class SupabaseClient:
         try:
             from datetime import datetime
             
-            # Clear existing future routes for this user to avoid duplicates
+            # Clear existing future assignments for this user to avoid duplicates
             today = datetime.now().date().isoformat()
-            self.client.table("routes").delete().eq("user_id", user_id).gte("date", today).execute()
+            self.client.table("user_assignments").delete().eq("user_id", user_id).gte("scheduled_date", today).execute()
             
             for date_str, day_data in schedule_data.items():
                 customers = day_data.get("customers", [])
@@ -190,45 +212,24 @@ class SupabaseClient:
                 if not customers:
                     continue  # Skip days with no customers
                 
-                # Create route for this day
-                route_data = {
-                    "user_id": user_id,
-                    "date": date_str,
-                    "status": "scheduled",
-                    "estimated_duration": day_data.get("total_duration_minutes", 0),
-                    "estimated_revenue": day_data.get("total_revenue", 0),
-                    "estimated_travel_time": day_data.get("estimated_travel_time", 0),
-                    "max_work_hours": day_data.get("max_hours", 8),
-                    "day_name": day_data.get("day", ""),
-                    "created_at": datetime.now().isoformat(),
-                    "updated_at": datetime.now().isoformat()
-                }
+                # Save customer assignments directly to user_assignments table
+                assignments = []
+                for customer in customers:
+                    assignment_data = {
+                        "user_id": user_id,
+                        "customer_id": customer["id"],
+                        "scheduled_date": date_str,
+                        "route_order": customer.get("route_order", 1),
+                        "estimated_duration": customer.get("estimated_duration", 30),
+                        "price": customer.get("price", 0),
+                        "status": "scheduled",
+                        "created_at": datetime.now().isoformat()
+                    }
+                    assignments.append(assignment_data)
                 
-                route_response = self.client.table("routes").insert(route_data).execute()
-                
-                if route_response.data:
-                    route_id = route_response.data[0]["id"]
-                    
-                    # Add customer assignments for this route
-                    route_jobs = []
-                    for customer in customers:
-                        job_data = {
-                            "route_id": route_id,
-                            "customer_id": customer["id"],
-                            "visit_order": customer.get("route_order", 1),
-                            "estimated_duration": customer.get("estimated_duration", 30),
-                            "price": customer.get("price", 0),
-                            "customer_name": customer.get("name", ""),
-                            "customer_address": customer.get("address", ""),
-                            "completed": False,
-                            "status": "scheduled",
-                            "created_at": datetime.now().isoformat()
-                        }
-                        route_jobs.append(job_data)
-                    
-                    if route_jobs:
-                        self.client.table("route_jobs").insert(route_jobs).execute()
-                        print(f"📅 Saved {len(route_jobs)} customer assignments for {date_str}")
+                if assignments:
+                    self.client.table("user_assignments").insert(assignments).execute()
+                    print(f"📅 Saved {len(assignments)} customer assignments for {date_str}")
             
         except Exception as e:
             print(f"❌ Error saving daily assignments: {e}")
@@ -236,7 +237,7 @@ class SupabaseClient:
 
     async def get_todays_schedule(self, user_id: str) -> Optional[Dict[str, Any]]:
         """
-        Get today's scheduled customers for a user
+        Get today's scheduled customers from user_assignments table
         
         Args:
             user_id: The user's UUID
@@ -248,21 +249,33 @@ class SupabaseClient:
             from datetime import datetime
             today = datetime.now().date().isoformat()
             
-            # Get today's route
-            route_response = self.client.table("routes").select("*").eq("user_id", user_id).eq("date", today).execute()
+            # Get today's assignments from user_assignments table
+            assignments_response = self.client.table("user_assignments").select("*").eq("user_id", user_id).eq("scheduled_date", today).order("route_order").execute()
             
-            if not route_response.data:
+            if not assignments_response.data:
                 return None
-                
-            route = route_response.data[0]
             
-            # Get customer assignments for today's route
-            jobs_response = self.client.table("route_jobs").select("*").eq("route_id", route["id"]).order("visit_order").execute()
+            # Get customer details for each assignment
+            customers = []
+            for assignment in assignments_response.data:
+                customer_response = self.client.table("customers").select("*").eq("id", assignment["customer_id"]).execute()
+                
+                if customer_response.data:
+                    customer = customer_response.data[0]
+                    customers.append({
+                        "id": customer["id"],
+                        "name": customer["name"],
+                        "address": customer["address"],
+                        "price": assignment["price"],
+                        "estimated_duration": assignment["estimated_duration"],
+                        "route_order": assignment["route_order"],
+                        "status": assignment["status"]
+                    })
             
             return {
                 "date": today,
-                "route": route,
-                "customers": jobs_response.data if jobs_response.data else []
+                "customers": customers,
+                "total_customers": len(customers)
             }
             
         except Exception as e:

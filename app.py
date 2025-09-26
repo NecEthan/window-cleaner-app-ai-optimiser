@@ -46,12 +46,12 @@ async def create_1week_schedule(user_id: str):
     """Create optimized 1-week schedule (8 days starting from today) from database data"""
     try:
         # Fetch work schedule from database
-        work_schedule = db.get_work_schedule(user_id)
+        work_schedule = await db.get_work_schedule(user_id)
         if not work_schedule:
             raise HTTPException(status_code=404, detail="Work schedule not found for user")
         
         # Fetch customers from database  
-        customers = db.get_customers(user_id)
+        customers = await db.get_customers(user_id)
         if not customers:
             raise HTTPException(status_code=404, detail="No customers found for user")
             
@@ -221,6 +221,72 @@ async def create_schedule_from_express(user_id: str, request: ExpressScheduleReq
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Express integration error: {str(e)}")
 
+@app.post("/smart-optimize/{user_id}")
+async def smart_optimize_schedule(user_id: str, request: ExpressScheduleRequest):
+    """
+    🧠 SMART ONE-BUTTON OPTIMIZATION
+    
+    Automatically detects if this is first-time or returning user:
+    - First-time: Optimizes all 7 days (including today/tomorrow)
+    - Returning: Protects today/tomorrow, only optimizes day after tomorrow onwards
+    
+    Perfect for the one-button solution you requested!
+    """
+    try:
+        # Convert work schedule from Express
+        work_schedule = request.work_schedule.model_dump()
+        
+        # Fetch customers from database using the user_id
+        customers = await db.get_customers(user_id)
+        if not customers:
+            raise HTTPException(status_code=404, detail="No customers found for user in database")
+        
+        # 🔍 SMART DETECTION: Check if first-time user
+        is_first_time = await db.is_first_time_user(user_id)
+        
+        # Get cleaner start location from Express request
+        cleaner_start_location = (
+            request.cleaner_start_location["lat"],
+            request.cleaner_start_location["lng"]
+        )
+        
+        # Create optimized schedule with smart date protection
+        schedule_result = create_2_week_schedule(
+            customers=customers,
+            work_schedule=work_schedule,
+            cleaner_start_location=cleaner_start_location,
+            protect_near_dates=not is_first_time  # Protect today/tomorrow if NOT first time
+        )
+        
+        # For now, skip database save to focus on testing smart detection
+        # TODO: Fix database schema compatibility for user_assignments table  
+        schedule_saved = False
+        print("ℹ️ Skipping database save for testing - focusing on smart detection logic")
+        
+        # Determine optimization type for response
+        optimization_type = "initial_optimization" if is_first_time else "protected_optimization"
+        
+        return {
+            "user_id": user_id,
+            "smart_optimization": True,
+            "optimization_type": optimization_type,
+            "is_first_time_user": is_first_time,
+            "protected_dates": ["today", "tomorrow"] if not is_first_time else [],
+            "work_schedule_received": work_schedule,
+            "customers_from_database": len(customers),
+            "schedule": schedule_result['schedule'],
+            "summary": schedule_result['summary'],
+            "time_savings_summary": schedule_result.get('time_savings_summary', {}),
+            "unscheduled_customers": len(schedule_result.get('unscheduled_customers', [])),
+            "schedule_saved_to_db": schedule_saved,
+            "message": f"🧠 Smart optimization complete! {'Initial setup - optimized all days' if is_first_time else 'Protected today/tomorrow, optimized future days'}"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Smart optimization error: {str(e)}")
+
 @app.get("/todays-schedule/{user_id}")
 async def get_todays_schedule(user_id: str):
     """
@@ -265,9 +331,10 @@ if __name__ == '__main__':
     print("📍 Server will be available at: http://127.0.0.1:5003")
     print("📋 Essential Endpoints:")
     print("   • GET  /health - Health check")
+    print("   • POST /smart-optimize/{user_id} - 🧠 Smart one-button optimization ⭐")
     print("   • POST /create-1week-schedule/{user_id} - Generate schedule from database")
     print("   • POST /create-schedule-with-data/{user_id} - Generate schedule with provided data")
-    print("   • POST /create-schedule-from-express/{user_id} - Express backend integration ⭐")
+    print("   • POST /create-schedule-from-express/{user_id} - Express backend integration")
     print("   • GET  /todays-schedule/{user_id} - Get today's scheduled customers 📅")
     print("   • POST /create-2week-schedule/{user_id} - Backward compatibility endpoint")
     uvicorn.run(app, host="127.0.0.1", port=5003)

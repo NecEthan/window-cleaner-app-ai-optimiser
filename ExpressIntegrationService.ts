@@ -77,13 +77,18 @@ interface TimeSavingsSummary {
 
 interface OptimizedScheduleResponse {
   user_id: string;
-  express_integration: boolean;
+  express_integration?: boolean;
+  smart_optimization?: boolean;
+  optimization_type?: 'initial_optimization' | 'protected_optimization';
+  is_first_time_user?: boolean;
+  protected_dates?: string[];
   work_schedule_received: WorkSchedule;
   customers_from_database: number;
   schedule: { [date: string]: DaySchedule };
   summary: ScheduleSummary;
   time_savings_summary: TimeSavingsSummary;
   unscheduled_customers: number;
+  schedule_saved_to_db?: boolean;
   message: string;
 }
 
@@ -102,6 +107,73 @@ export class WindowCleanerOptimizationService {
   ) {
     this.baseUrl = baseUrl;
     this.timeout = timeout;
+  }
+
+  /**
+   * 🧠 SMART ONE-BUTTON OPTIMIZATION
+   * 
+   * Automatically detects first-time vs returning users:
+   * - First-time: Optimizes all days (including today/tomorrow)
+   * - Returning: Protects today/tomorrow, only optimizes future days
+   * 
+   * Perfect for: The one-button solution with smart detection
+   */
+  async smartOptimizeSchedule(
+    userId: string,
+    workSchedule: WorkSchedule,
+    cleanerLocation?: CleanerLocation
+  ): Promise<OptimizedScheduleResponse> {
+    try {
+      const requestData: ExpressScheduleRequest = {
+        work_schedule: workSchedule,
+        cleaner_start_location: cleanerLocation || { lat: 51.5074, lng: -0.1278 } // Default London
+      };
+
+      console.log(`🧠 Smart optimization for user: ${userId}`);
+      console.log(`📊 Work Schedule:`, workSchedule);
+      
+      const response: AxiosResponse<OptimizedScheduleResponse> = await axios.post(
+        `${this.baseUrl}/smart-optimize/${userId}`,
+        requestData,
+        {
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          timeout: this.timeout,
+        }
+      );
+
+      const optimizationType = response.data.is_first_time_user ? 'First-time setup' : 'Protected optimization';
+      console.log(`✅ ${optimizationType} completed for ${response.data.customers_from_database} customers`);
+      console.log(`💰 Total revenue: £${response.data.summary.total_revenue}`);
+      console.log(`📅 Working days: ${response.data.summary.working_days}`);
+      
+      if (response.data.protected_dates && response.data.protected_dates.length > 0) {
+        console.log(`🛡️ Protected dates: ${response.data.protected_dates.join(', ')}`);
+      }
+      
+      return response.data;
+
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const status = error.response?.status;
+        const message = error.response?.data?.detail || error.message;
+        
+        console.error(`❌ Smart optimization failed (${status}):`, message);
+        
+        // Handle specific error cases
+        if (status === 404) {
+          throw new Error(`No customers found for user ${userId}. Please ensure the user has customers in the database.`);
+        } else if (status === 500) {
+          throw new Error(`Smart optimization engine error: ${message}`);
+        } else {
+          throw new Error(`Smart optimization failed: ${message}`);
+        }
+      } else {
+        console.error('❌ Network Error:', error);
+        throw new Error(`Network error: Unable to connect to optimization service at ${this.baseUrl}`);
+      }
+    }
   }
 
   /**
