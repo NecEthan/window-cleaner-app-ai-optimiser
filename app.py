@@ -1,9 +1,19 @@
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Dict
 from optimiser import optimize_route
 from database import SupabaseClient
+
+class WorkScheduleInput(BaseModel):
+    monday_hours: Optional[float] = None
+    tuesday_hours: Optional[float] = None
+    wednesday_hours: Optional[float] = None
+    thursday_hours: Optional[float] = None
+    friday_hours: Optional[float] = None
+    saturday_hours: Optional[float] = None
+    sunday_hours: Optional[float] = None
 
 app = FastAPI(title="Window Cleaner AI Optimizer", version="1.0.0")
 db = SupabaseClient()
@@ -46,6 +56,7 @@ async def create_1week_schedule(user_id: str):
     """Create optimized 1-week schedule (8 days starting from today) from database data"""
     try:
         # Fetch work schedule from database
+        print(f"Fetching work schedule for user_id: {user_id}")
         work_schedule = await db.get_work_schedule(user_id)
         if not work_schedule:
             raise HTTPException(status_code=404, detail="Work schedule not found for user")
@@ -59,18 +70,19 @@ async def create_1week_schedule(user_id: str):
         cleaner_start_location = (51.5074, -0.1278)
         
         # Create 1-week optimized schedule (8 days starting from today)
-        schedule_result = optimize_route(
+        from optimiser import create_2_week_schedule
+        schedule_result = create_2_week_schedule(
             customers=customers,
             work_schedule=work_schedule,
             cleaner_start_location=cleaner_start_location
         )
         
-        # Save optimized schedule to database
+        # Only save optimized schedule to user_assignments table
         try:
             schedule_id = await db.save_optimized_schedule(user_id, work_schedule, schedule_result['schedule'])
-            print(f"✅ Schedule saved to database with ID: {schedule_id}")
+            print(f"✅ Schedule saved to user_assignments table with ID: {schedule_id}")
         except Exception as save_error:
-            print(f"⚠️ Warning: Failed to save schedule to database: {save_error}")
+            print(f"⚠️ Warning: Failed to save schedule to user_assignments table: {save_error}")
             # Continue without failing the request
 
         

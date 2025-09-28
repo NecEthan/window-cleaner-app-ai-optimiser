@@ -31,7 +31,7 @@ class SupabaseClient:
             Work schedule dictionary or None if not found
         """
         try:
-            response = self.client.table("work_schedules").select("*").eq("user_id", user_id).eq("is_active", True).execute()
+            response = self.client.table("work_schedules").select("*").eq("user_id", user_id).execute()
             
             if response.data and len(response.data) > 0:
                 return response.data[0]  # Return the first active schedule
@@ -144,14 +144,9 @@ class SupabaseClient:
                 "friday_hours": work_schedule.get("friday_hours"),
                 "saturday_hours": work_schedule.get("saturday_hours"),
                 "sunday_hours": work_schedule.get("sunday_hours"),
-                "is_active": True,
                 "updated_at": datetime.now().isoformat()
             }
             
-            # First, deactivate any existing active schedules
-            self.client.table("work_schedules").update({"is_active": False}).eq("user_id", user_id).execute()
-            
-            # Insert new work schedule
             work_schedule_response = self.client.table("work_schedules").insert(work_schedule_data).execute()
             
             if not work_schedule_response.data:
@@ -248,40 +243,15 @@ class SupabaseClient:
         try:
             from datetime import datetime
             today = datetime.now().date().isoformat()
-            
             # Get today's assignments from user_assignments table
             assignments_response = self.client.table("user_assignments").select("*").eq("user_id", user_id).eq("scheduled_date", today).order("route_order").execute()
-            
-            if not assignments_response.data:
+            if assignments_response.data:
+                return assignments_response.data
+            else:
                 return None
-            
-            # Get customer details for each assignment
-            customers = []
-            for assignment in assignments_response.data:
-                customer_response = self.client.table("customers").select("*").eq("id", assignment["customer_id"]).execute()
-                
-                if customer_response.data:
-                    customer = customer_response.data[0]
-                    customers.append({
-                        "id": customer["id"],
-                        "name": customer["name"],
-                        "address": customer["address"],
-                        "price": assignment["price"],
-                        "estimated_duration": assignment["estimated_duration"],
-                        "route_order": assignment["route_order"],
-                        "status": assignment["status"]
-                    })
-            
-            return {
-                "date": today,
-                "customers": customers,
-                "total_customers": len(customers)
-            }
-            
         except Exception as e:
-            print(f"Error fetching today's schedule: {e}")
+            print(f"❌ Error fetching today's schedule: {e}")
             return None
-
     async def save_schedule(self, user_id: str, schedule_data: Dict[str, Any]) -> bool:
         """
         Save generated schedule to database using your routes and route_jobs tables
