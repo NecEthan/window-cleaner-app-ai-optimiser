@@ -121,45 +121,38 @@ class SupabaseClient:
     
     async def save_optimized_schedule(self, user_id: str, work_schedule: Dict[str, Any], schedule_data: Dict[str, Any]) -> str:
         """
-        Save optimized schedule to database
-        
-        Args:
-            user_id: The user's UUID
-            work_schedule: The work schedule used for optimization
-            schedule_data: The generated schedule data with daily customer assignments
-            
-        Returns:
-            Schedule ID if saved successfully, raises exception otherwise
+        Save or update optimized schedule for user as a single JSON object in user_assignments
         """
         try:
-            from datetime import datetime
-            
-            # 1. Save/Update work schedule in work_schedules table
-            work_schedule_data = {
+            from datetime import datetime, date
+            import json
+            # Helper to recursively convert date objects to strings
+            def serialize_dates(obj):
+                if isinstance(obj, dict):
+                    return {k: serialize_dates(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [serialize_dates(v) for v in obj]
+                elif isinstance(obj, date):
+                    return obj.isoformat()
+                else:
+                    return obj
+            safe_schedule_data = serialize_dates(schedule_data)
+            response = self.client.table("user_assignments").select("id").eq("user_id", user_id).execute()
+            schedule_row = {
                 "user_id": user_id,
-                "monday_hours": work_schedule.get("monday_hours"),
-                "tuesday_hours": work_schedule.get("tuesday_hours"), 
-                "wednesday_hours": work_schedule.get("wednesday_hours"),
-                "thursday_hours": work_schedule.get("thursday_hours"),
-                "friday_hours": work_schedule.get("friday_hours"),
-                "saturday_hours": work_schedule.get("saturday_hours"),
-                "sunday_hours": work_schedule.get("sunday_hours"),
+                "schedule_data": safe_schedule_data,
                 "updated_at": datetime.now().isoformat()
             }
-            
-            work_schedule_response = self.client.table("work_schedules").insert(work_schedule_data).execute()
-            
-            if not work_schedule_response.data:
-                raise Exception("Failed to save work schedule")
-                
-            schedule_id = work_schedule_response.data[0]["id"]
-            
-            # 2. Save daily customer assignments
-            await self._save_daily_assignments(user_id, schedule_data)
-            
-            print(f"✅ Optimized schedule saved with ID: {schedule_id}")
-            return schedule_id
-            
+            if not response.data:
+                # Insert new row
+                insert_response = self.client.table("user_assignments").insert(schedule_row).execute()
+                print(f"✅ Inserted new schedule for user {user_id}")
+                return insert_response.data[0]["id"] if insert_response.data else ""
+            else:
+                # Update existing row
+                update_response = self.client.table("user_assignments").update({"schedule_data": safe_schedule_data, "updated_at": datetime.now().isoformat()}).eq("user_id", user_id).execute()
+                print(f"✅ Updated schedule for user {user_id}")
+                return response.data[0]["id"]
         except Exception as e:
             print(f"❌ Error saving optimized schedule: {e}")
             raise Exception(f"Failed to save optimized schedule: {str(e)}")
@@ -186,49 +179,6 @@ class SupabaseClient:
             print(f"Error checking first-time user status: {e}")
             return True  # Default to first-time if we can't determine
 
-    async def _save_daily_assignments(self, user_id: str, schedule_data: Dict[str, Any]):
-        """
-        Save daily customer assignments to user_assignments table (simplified single-table approach)
-        
-        Args:
-            user_id: The user's UUID
-            schedule_data: The schedule data containing daily assignments
-        """
-        try:
-            from datetime import datetime
-            
-            # Clear existing future assignments for this user to avoid duplicates
-            today = datetime.now().date().isoformat()
-            self.client.table("user_assignments").delete().eq("user_id", user_id).gte("scheduled_date", today).execute()
-            
-            for date_str, day_data in schedule_data.items():
-                customers = day_data.get("customers", [])
-                
-                if not customers:
-                    continue  # Skip days with no customers
-                
-                # Save customer assignments directly to user_assignments table
-                assignments = []
-                for customer in customers:
-                    assignment_data = {
-                        "user_id": user_id,
-                        "customer_id": customer["id"],
-                        "scheduled_date": date_str,
-                        "route_order": customer.get("route_order", 1),
-                        "estimated_duration": customer.get("estimated_duration", 30),
-                        "price": customer.get("price", 0),
-                        "status": "scheduled",
-                        "created_at": datetime.now().isoformat()
-                    }
-                    assignments.append(assignment_data)
-                
-                if assignments:
-                    self.client.table("user_assignments").insert(assignments).execute()
-                    print(f"📅 Saved {len(assignments)} customer assignments for {date_str}")
-            
-        except Exception as e:
-            print(f"❌ Error saving daily assignments: {e}")
-            raise Exception(f"Failed to save daily assignments: {str(e)}")
 
     async def get_todays_schedule(self, user_id: str) -> Optional[Dict[str, Any]]:
         """
@@ -252,58 +202,6 @@ class SupabaseClient:
         except Exception as e:
             print(f"❌ Error fetching today's schedule: {e}")
             return None
-    async def save_schedule(self, user_id: str, schedule_data: Dict[str, Any]) -> bool:
-        """
-        Save generated schedule to database using your routes and route_jobs tables
-        
-        Args:
-            user_id: The user's UUID
-            schedule_data: The generated schedule data
-            
-        Returns:
-            True if saved successfully, False otherwise
-        """
-        try:
-            from datetime import datetime, timedelta
-            
-            # Clear existing future routes for this user (optional)
-            # self.client.table("routes").delete().eq("user_id", user_id).gte("date", datetime.now().date()).execute()
-            
-            for date_str, day_data in schedule_data.items():
-                if not day_data.get("jobs"):
-                    continue  # Skip days with no jobs
-                
-                # Create route for this day
-                route_data = {
-                    "user_id": user_id,
-                    "date": date_str,
-                    "status": "planned",
-                    "estimated_duration": int(day_data.get("estimated_work_hours", 0) * 60),  # Convert to minutes
-                    "created_at": datetime.now().isoformat(),
-                    "updated_at": datetime.now().isoformat()
-                }
-                
-                route_response = self.client.table("routes").insert(route_data).execute()
-                
-                if route_response.data:
-                    route_id = route_response.data[0]["id"]
-                    
-                    # Add route jobs for this route
-                    for idx, job in enumerate(day_data["jobs"]):
-                        job_data = {
-                            "route_id": route_id,
-                            "customer_id": job["customer_id"],
-                            "visit_order": idx + 1,
-                            "completed": False,
-                            "created_at": datetime.now().isoformat()
-                        }
-                        
-                        self.client.table("route_jobs").insert(job_data).execute()
-            
-            return True
-        except Exception as e:
-            print(f"Error saving schedule: {e}")
-            return False
 
 # Global instance
 db = SupabaseClient()
