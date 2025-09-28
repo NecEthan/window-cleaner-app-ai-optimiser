@@ -86,41 +86,6 @@ async def create_1week_schedule(user_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creating schedule: {str(e)}")
 
-@app.get("/todays-schedule/{user_id}")
-async def get_todays_schedule(user_id: str):
-    """
-    Get today's scheduled customers from the database
-    
-    This endpoint retrieves the customers that are scheduled to be cleaned today
-    based on the previously saved optimized schedule.
-    """
-    try:
-        todays_schedule = await db.get_todays_schedule(user_id)
-        
-        if not todays_schedule:
-            return {
-                "user_id": user_id,
-                "date": None,
-                "customers": [],
-                "message": "No customers scheduled for today"
-            }
-        
-        return {
-            "user_id": user_id,
-            "date": todays_schedule["date"],
-            "route_info": {
-                "estimated_duration": todays_schedule["route"]["estimated_duration"],
-                "estimated_revenue": todays_schedule["route"]["estimated_revenue"],
-                "max_work_hours": todays_schedule["route"]["max_work_hours"],
-                "day_name": todays_schedule["route"]["day_name"]
-            },
-            "customers": todays_schedule["customers"],
-            "total_customers": len(todays_schedule["customers"]),
-            "message": f"Today's schedule: {len(todays_schedule['customers'])} customers to visit"
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error retrieving today's schedule: {str(e)}")
 
 
 
