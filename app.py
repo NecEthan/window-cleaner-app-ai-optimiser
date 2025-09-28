@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Dict
-from optimiser import create_2_week_schedule
+from optimiser import optimize_route
 from database import SupabaseClient
 
 app = FastAPI(title="Window Cleaner AI Optimizer", version="1.0.0")
@@ -59,7 +59,7 @@ async def create_1week_schedule(user_id: str):
         cleaner_start_location = (51.5074, -0.1278)
         
         # Create 1-week optimized schedule (8 days starting from today)
-        schedule_result = create_2_week_schedule(
+        schedule_result = optimize_route(
             customers=customers,
             work_schedule=work_schedule,
             cleaner_start_location=cleaner_start_location
@@ -83,209 +83,8 @@ async def create_1week_schedule(user_id: str):
             "schedule_saved_to_db": True,
             "message": "1-week schedule (8 days) created successfully and saved to database"
         }
-        
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creating schedule: {str(e)}")
-
-@app.post("/create-2week-schedule/{user_id}")
-async def create_2week_schedule_redirect(user_id: str):
-    """Backward compatibility - redirects to 1-week schedule endpoint"""
-    return await create_1week_schedule(user_id)
-
-# Pydantic model for work schedule input
-class WorkScheduleInput(BaseModel):
-    monday_hours: Optional[float] = None
-    tuesday_hours: Optional[float] = None
-    wednesday_hours: Optional[float] = None
-    thursday_hours: Optional[float] = None
-    friday_hours: Optional[float] = None
-    saturday_hours: Optional[float] = None
-    sunday_hours: Optional[float] = None
-
-class CustomerInput(BaseModel):
-    id: str
-    name: str
-    address: str
-    lat: float
-    lng: float
-    price: float
-    estimated_duration: int
-    last_cleaned: str
-    frequency_days: int
-
-class ScheduleRequestWithData(BaseModel):
-    work_schedule: WorkScheduleInput
-    customers: List[CustomerInput]
-    cleaner_start_location: Optional[Dict[str, float]] = {"lat": 51.5074, "lng": -0.1278}
-
-@app.post("/create-schedule-with-data/{user_id}")
-async def create_schedule_with_data(user_id: str, request: ScheduleRequestWithData):
-    """
-    Create optimized 1-week schedule with work schedule and customer data passed in the request
-    This endpoint allows Express/frontend to pass all necessary data directly
-    """
-    try:
-        # Convert Pydantic models to dictionaries
-        work_schedule = request.work_schedule.model_dump()
-        customers = [customer.model_dump() for customer in request.customers]
-        
-        # Get cleaner start location
-        cleaner_start_location = (
-            request.cleaner_start_location["lat"],
-            request.cleaner_start_location["lng"]
-        )
-        
-        # Create 1-week optimized schedule
-        schedule_result = create_2_week_schedule(
-            customers=customers,
-            work_schedule=work_schedule,
-            cleaner_start_location=cleaner_start_location
-        )
-        
-        return {
-            "user_id": user_id,
-            "work_schedule_used": work_schedule,
-            "total_customers_provided": len(customers),
-            "schedule": schedule_result['schedule'],
-            "summary": schedule_result['summary'],
-            "time_savings_summary": schedule_result.get('time_savings_summary', {}),
-            "unscheduled_customers": len(schedule_result.get('unscheduled_customers', [])),
-            "message": "1-week schedule (8 days) created successfully with provided data"
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error creating schedule with data: {str(e)}")
-
-# Pydantic model for Express backend integration
-class ExpressScheduleRequest(BaseModel):
-    work_schedule: WorkScheduleInput
-    cleaner_start_location: Optional[Dict[str, float]] = {"lat": 51.5074, "lng": -0.1278}
-
-@app.post("/create-schedule-from-express/{user_id}")
-async def create_schedule_from_express(user_id: str, request: ExpressScheduleRequest):
-    """
-    Express Backend Integration Endpoint
-    
-    Receives work schedule from Express backend, fetches customers from database,
-    optimizes the schedule, and returns optimized customer schedule back to Express.
-    
-    Perfect for Express → FastAPI → Express integration workflow.
-    """
-    try:
-        # Convert work schedule from Express
-        work_schedule = request.work_schedule.model_dump()
-        
-        # Fetch customers from database using the user_id
-        customers = await db.get_customers(user_id)
-        if not customers:
-            raise HTTPException(status_code=404, detail="No customers found for user in database")
-        
-        # Get cleaner start location from Express request
-        cleaner_start_location = (
-            request.cleaner_start_location["lat"],
-            request.cleaner_start_location["lng"]
-        )
-        
-        # Create optimized 1-week schedule
-        schedule_result = create_2_week_schedule(
-            customers=customers,
-            work_schedule=work_schedule,
-            cleaner_start_location=cleaner_start_location
-        )
-        
-        # Save optimized schedule to database
-        try:
-            schedule_id = await db.save_optimized_schedule(user_id, work_schedule, schedule_result['schedule'])
-            print(f"✅ Express integration: Schedule saved to database with ID: {schedule_id}")
-            schedule_saved = True
-        except Exception as save_error:
-            print(f"⚠️ Warning: Failed to save schedule to database: {save_error}")
-            schedule_saved = False
-            # Continue without failing the request
-        
-        return {
-            "user_id": user_id,
-            "express_integration": True,
-            "work_schedule_received": work_schedule,
-            "customers_from_database": len(customers),
-            "schedule": schedule_result['schedule'],
-            "summary": schedule_result['summary'],
-            "time_savings_summary": schedule_result.get('time_savings_summary', {}),
-            "unscheduled_customers": len(schedule_result.get('unscheduled_customers', [])),
-            "schedule_saved_to_db": schedule_saved,
-            "message": "Express → FastAPI integration successful! Schedule optimized and saved to database"
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Express integration error: {str(e)}")
-
-@app.post("/smart-optimize/{user_id}")
-async def smart_optimize_schedule(user_id: str, request: ExpressScheduleRequest):
-    """
-    🧠 SMART ONE-BUTTON OPTIMIZATION
-    
-    Automatically detects if this is first-time or returning user:
-    - First-time: Optimizes all 7 days (including today/tomorrow)
-    - Returning: Protects today/tomorrow, only optimizes day after tomorrow onwards
-    
-    Perfect for the one-button solution you requested!
-    """
-    try:
-        # Convert work schedule from Express
-        work_schedule = request.work_schedule.model_dump()
-        
-        # Fetch customers from database using the user_id
-        customers = await db.get_customers(user_id)
-        if not customers:
-            raise HTTPException(status_code=404, detail="No customers found for user in database")
-        
-        # 🔍 SMART DETECTION: Check if first-time user
-        is_first_time = await db.is_first_time_user(user_id)
-        
-        # Get cleaner start location from Express request
-        cleaner_start_location = (
-            request.cleaner_start_location["lat"],
-            request.cleaner_start_location["lng"]
-        )
-        
-        # Create optimized schedule with smart date protection
-        schedule_result = create_2_week_schedule(
-            customers=customers,
-            work_schedule=work_schedule,
-            cleaner_start_location=cleaner_start_location,
-            protect_near_dates=not is_first_time  # Protect today/tomorrow if NOT first time
-        )
-        
-        # For now, skip database save to focus on testing smart detection
-        # TODO: Fix database schema compatibility for user_assignments table  
-        schedule_saved = False
-        print("ℹ️ Skipping database save for testing - focusing on smart detection logic")
-        
-        # Determine optimization type for response
-        optimization_type = "initial_optimization" if is_first_time else "protected_optimization"
-        
-        return {
-            "user_id": user_id,
-            "smart_optimization": True,
-            "optimization_type": optimization_type,
-            "is_first_time_user": is_first_time,
-            "protected_dates": ["today", "tomorrow"] if not is_first_time else [],
-            "work_schedule_received": work_schedule,
-            "customers_from_database": len(customers),
-            "schedule": schedule_result['schedule'],
-            "summary": schedule_result['summary'],
-            "time_savings_summary": schedule_result.get('time_savings_summary', {}),
-            "unscheduled_customers": len(schedule_result.get('unscheduled_customers', [])),
-            "schedule_saved_to_db": schedule_saved,
-            "message": f"🧠 Smart optimization complete! {'Initial setup - optimized all days' if is_first_time else 'Protected today/tomorrow, optimized future days'}"
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Smart optimization error: {str(e)}")
 
 @app.get("/todays-schedule/{user_id}")
 async def get_todays_schedule(user_id: str):
