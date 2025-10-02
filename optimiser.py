@@ -54,13 +54,13 @@ def create_2_week_schedule(customers: List[Dict], work_schedule: Dict, cleaner_s
     
     Args:
         customers: List of customer dicts with id, name, address, lat, lng, frequency_days, 
-                  last_cleaned, estimated_duration, price
+                  last_cleaned, estimated_duration, price, payment_method (optional, defaults to 'card')
         work_schedule: Dict with day_hours like {'monday_hours': 8, 'tuesday_hours': 6, ...}
         cleaner_start_location: Tuple of (lat, lng) for cleaner's starting location
         protect_near_dates: If True, skip today and tomorrow (for returning users)
     
     Returns:
-        Dict with schedule for next 8 days (1 week) including optimized routes
+        Dict with schedule for next 8 days (1 week) including optimized routes with payment methods
     """
     
     # Get working days and hours
@@ -260,7 +260,8 @@ def _optimize_daily_route(customers: List[Dict], cleaner_start_location: Tuple[f
             customer = customers[customer_idx]
             optimized_customers.append({
                 **customer,
-                'route_order': len(optimized_customers) + 1  # Add route position
+                'route_order': len(optimized_customers) + 1,  # Add route position
+                'payment_method': customer.get('payment_method', 'card')  # Add payment method with card as default
             })
             total_duration += customer['estimated_duration']
             total_revenue += customer['price']
