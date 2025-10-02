@@ -115,6 +115,7 @@ def create_2_week_schedule(customers: List[Dict], work_schedule: Dict, cleaner_s
                     daily_customers, 
                     cleaner_start_location
                 )
+             
                 
                 schedule[current_date.strftime('%Y-%m-%d')] = {
                     'date': current_date.strftime('%Y-%m-%d'),
@@ -227,6 +228,9 @@ def _assign_customers_to_day(customers: List[Dict], date: datetime.date, max_hou
 
 
 def _optimize_daily_route(customers: List[Dict], cleaner_start_location: Tuple[float, float]) -> Dict:
+    print(customers)
+    print('----------------')
+    print(cleaner_start_location)   
     """Optimize route for a single day's customers with time savings analysis"""
     if not customers:
         return {
@@ -240,7 +244,7 @@ def _optimize_daily_route(customers: List[Dict], cleaner_start_location: Tuple[f
                 'efficiency_improvement_percent': 0
             }
         }
-    
+        
     # Prepare locations (cleaner start + customer locations)
     locations = [cleaner_start_location]
     for customer in customers:
