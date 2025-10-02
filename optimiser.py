@@ -388,6 +388,13 @@ def _calculate_actual_travel_time(customers: List[Dict], cleaner_start_location:
             distance = geodesic(locations[from_idx], locations[to_idx]).meters
             total_distance_meters += distance
     
+    # Add return trip home from last job
+    if len(route_order) > 1:
+        last_job_idx = route_order[-1]
+        if 0 <= last_job_idx < len(locations):
+            return_distance = geodesic(locations[last_job_idx], cleaner_start_location).meters
+            total_distance_meters += return_distance
+    
     # Convert distance to travel time
     # Assuming average speed of 25 km/h in urban areas (accounting for traffic, stops, parking)
     avg_speed_kmh = 25
