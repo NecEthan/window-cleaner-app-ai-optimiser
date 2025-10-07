@@ -2,6 +2,158 @@ from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Tuple
+import os
+import statistics
+
+# Initialize Supabase connection for learning
+try:
+    from supabase import create_client
+    supabase_url = os.getenv('SUPABASE_URL')
+    supabase_key = os.getenv('SUPABASE_ANON_KEY')
+    if supabase_url and supabase_key:
+        supabase = create_client(supabase_url, supabase_key)
+        LEARNING_ENABLED = True
+        print("🧠 Learning system enabled - will use job history data")
+    else:
+        LEARNING_ENABLED = False
+        print("⚠️ Learning disabled - missing Supabase credentials")
+except ImportError:
+    LEARNING_ENABLED = False
+    print("⚠️ Learning disabled - supabase package not installed")
+except Exception as e:
+    LEARNING_ENABLED = False
+    print(f"⚠️ Learning disabled - error: {e}")
+
+def get_learned_duration(customer_id: str, fallback: int = 30) -> int:
+    """Get learned average duration for a customer from job_times table"""
+    if not LEARNING_ENABLED:
+        return fallback
+    
+    try:
+        # Get last 10 jobs for this customer
+        result = supabase.table('job_times')\
+            .select('actual_duration')\
+            .eq('customer_id', str(customer_id))\
+            .order('created_at', desc=True)\
+            .limit(10)\
+            .execute()
+        
+        if not result.data:
+            return fallback
+        
+        durations = [row['actual_duration'] for row in result.data]
+        
+        # Fast learning algorithm
+        if len(durations) == 1:
+            return durations[0]  # Use first job immediately
+        elif len(durations) == 2:
+            return int(sum(durations) / 2)  # Average of 2 jobs
+        else:
+            return int(statistics.median(durations))  # Median for stability
+            
+    except Exception as e:
+        print(f"❌ Error getting learned duration for customer {customer_id}: {e}")
+        return fallback
+
+def enhance_customers_with_learning(customers: List[Dict]) -> List[Dict]:
+    """Replace estimated_duration with learned durations from job history"""
+    if not LEARNING_ENABLED:
+        return customers
+    
+    print("🧠 Enhancing customers with learned durations...")
+    enhanced_customers = []
+    learning_used_count = 0
+    
+    for customer in customers:
+        customer_copy = customer.copy()
+        customer_id = str(customer['id'])
+        
+        # Get original duration
+        original_duration = customer.get('estimated_duration', 30)
+        
+        # Get learned duration from database
+        learned_duration = get_learned_duration(customer_id, original_duration)
+        
+        if learned_duration != original_duration:
+            improvement = abs(learned_duration - original_duration)
+            print(f"📊 {customer.get('name', 'Unknown')}: {original_duration}min → {learned_duration}min (±{improvement}min learned)")
+            customer_copy['estimated_duration'] = learned_duration
+            customer_copy['duration_source'] = 'learned'
+            learning_used_count += 1
+        else:
+            customer_copy['estimated_duration'] = original_duration
+            customer_copy['duration_source'] = 'estimated'
+            
+        enhanced_customers.append(customer_copy)
+    
+    total_customers = len(customers)
+    learning_percentage = (learning_used_count / total_customers) * 100 if total_customers > 0 else 0
+    print(f"🎯 Using learned data for {learning_used_count}/{total_customers} customers ({learning_percentage:.1f}%)")
+    
+    return enhanced_customers
+
+def get_learning_stats() -> Dict:
+    """Get learning system statistics"""
+    if not LEARNING_ENABLED:
+        return {"learning_enabled": False}
+    
+    try:
+        # Get total jobs recorded
+        result = supabase.table('job_times')\
+            .select('customer_id', count='exact')\
+            .execute()
+        
+        total_jobs = result.count if result.count else 0
+        
+        # Get unique customers with data
+        customers_result = supabase.table('job_times')\
+            .select('customer_id')\
+            .execute()
+        
+        unique_customers = len(set(row['customer_id'] for row in customers_result.data)) if customers_result.data else 0
+        
+        # Get recent accuracy (jobs with estimates)
+        accuracy_result = supabase.table('job_times')\
+            .select('estimated_duration, actual_duration')\
+            .not_.is_('estimated_duration', 'null')\
+            .order('created_at', desc=True)\
+            .limit(50)\
+            .execute()
+        
+        accuracy_stats = {}
+        if accuracy_result.data:
+            jobs = accuracy_result.data
+            accurate_jobs = 0
+            total_error = 0
+            
+            for job in jobs:
+                estimated = job['estimated_duration']
+                actual = job['actual_duration']
+                error = abs(estimated - actual)
+                total_error += error
+                
+                if error <= 5:  # Within ±5 minutes
+                    accurate_jobs += 1
+            
+            accuracy_percent = (accurate_jobs / len(jobs)) * 100
+            avg_error = total_error / len(jobs)
+            
+            accuracy_stats = {
+                "accuracy_within_5min": f"{accuracy_percent:.1f}%",
+                "average_error_minutes": round(avg_error, 1),
+                "jobs_with_estimates": len(jobs)
+            }
+        
+        return {
+            "learning_enabled": True,
+            "total_jobs_recorded": total_jobs,
+            "unique_customers_with_data": unique_customers,
+            "learning_status": "Excellent" if total_jobs > 100 else "Improving" if total_jobs > 20 else "Learning",
+            **accuracy_stats
+        }
+        
+    except Exception as e:
+        return {"learning_enabled": True, "error": str(e)}
 
 def optimize_route(locations):
     """Basic route optimization for a single day's customers"""
@@ -53,7 +205,7 @@ def create_2_week_schedule(customers: List[Dict], work_schedule: Dict, cleaner_s
     Create an optimized 1-week schedule for window cleaning (8 days starting from today)
     
     Args:
-        customers: List of customer dicts with id, name, address, lat, lng, frequency_days, 
+        customers: List of customer dicts with id, name, address, phone, lat, lng, frequency_days, 
                   last_cleaned, estimated_duration, price, payment_method (optional, defaults to 'card')
         work_schedule: Dict with day_hours like {'monday_hours': 8, 'tuesday_hours': 6, ...}
         cleaner_start_location: Tuple of (lat, lng) for cleaner's starting location
@@ -63,11 +215,14 @@ def create_2_week_schedule(customers: List[Dict], work_schedule: Dict, cleaner_s
         Dict with schedule for next 8 days (1 week) including optimized routes with payment methods
     """
     
+    # 🧠 STEP 1: Enhance customers with learned durations BEFORE optimization
+    enhanced_customers = enhance_customers_with_learning(customers)
+    
     # Get working days and hours
     working_days = _get_working_days(work_schedule)
     
     # Generate customers that need cleaning in next week (8 days)
-    customers_needing_service = _filter_customers_by_urgency(customers)
+    customers_needing_service = _filter_customers_by_urgency(enhanced_customers)
     
     # Create 1-week schedule (8 days starting from today)
     schedule = {}
@@ -147,7 +302,14 @@ def create_2_week_schedule(customers: List[Dict], work_schedule: Dict, cleaner_s
             'extra_customers_per_week': int(total_time_saved / 45) if total_time_saved > 0 else 0,
             'weekly_efficiency_gain': f"{round((total_time_saved / (sum([len(day['customers']) for day in schedule.values()]) * 45)) * 100, 1)}%" if schedule else "0%"
         },
-        'unscheduled_customers': customers_needing_service
+        'unscheduled_customers': customers_needing_service,
+        'machine_learning': {
+            'learning_enabled': LEARNING_ENABLED,
+            'customers_with_learned_data': len([c for c in enhanced_customers if c.get('duration_source') == 'learned']),
+            'total_customers': len(customers),
+            'learning_coverage_percent': round((len([c for c in enhanced_customers if c.get('duration_source') == 'learned']) / len(customers)) * 100, 1) if customers else 0,
+            'accuracy_stats': get_learning_stats()
+        }
     }
 
 

@@ -67,6 +67,7 @@ class SupabaseClient:
                     "last_cleaned": customer["last_completed"] or "2025-01-01",  # Default if never cleaned
                     "frequency_days": self._parse_frequency(customer["frequency"]),
                     "name": customer["name"],
+                    "phone": customer["phone"] or "",  # Include phone number
                     "address": customer["address"],
                     "price": float(customer["price"]),
                     "estimated_duration": customer["estimated_duration"] or 30  # Default 30 minutes
