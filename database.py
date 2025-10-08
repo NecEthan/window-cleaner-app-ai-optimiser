@@ -12,6 +12,14 @@ load_dotenv()
 class SupabaseClient:
     def __init__(self):
         """Initialize Supabase client"""
+        # Debug: Print all environment variables to see what Railway has
+        print("🔍 DEBUG: All environment variables:")
+        for key, value in os.environ.items():
+            if 'SUPABASE' in key:
+                print(f"  {key}: {value[:50]}...")
+            elif key in ['PORT', 'RAILWAY_ENVIRONMENT', 'RAILWAY_PROJECT_ID']:
+                print(f"  {key}: {value}")
+        
         # Try to get environment variables from Railway first, then fall back to .env
         self.url = os.environ.get("SUPABASE_URL") or os.getenv("SUPABASE_URL")
         self.key = os.environ.get("SUPABASE_ANON_KEY") or os.getenv("SUPABASE_ANON_KEY")
