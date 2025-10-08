@@ -53,6 +53,13 @@ logs/
 # Test files (if any are added in the future)
 test_*.py
 *_test.py
+debug_*.py
+verify_*.py
+
+# TypeScript files (this is a Python project)
+*.ts
+*.js
+node_modules/
 
 # Temporary files
 *.tmp
