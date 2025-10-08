@@ -13,10 +13,10 @@ class SupabaseClient:
     def __init__(self):
         """Initialize Supabase client"""
         self.url = os.getenv("SUPABASE_URL")
-        self.key = os.getenv("SUPABASE_KEY")
+        self.key = os.getenv("SUPABASE_ANON_KEY")
         
         if not self.url or not self.key:
-            raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set in .env file")
+            raise ValueError("SUPABASE_URL and SUPABASE_ANON_KEY must be set in .env file")
         
         self.client: Client = create_client(self.url, self.key)
     
