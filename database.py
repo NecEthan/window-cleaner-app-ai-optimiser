@@ -6,19 +6,33 @@ from typing import Optional, Dict, Any, List
 from supabase import create_client, Client
 from dotenv import load_dotenv
 
-# Load environment variables
+# Load environment variables (only works locally, Railway uses environment variables directly)
 load_dotenv()
 
 class SupabaseClient:
     def __init__(self):
         """Initialize Supabase client"""
-        self.url = os.getenv("SUPABASE_URL")
-        self.key = os.getenv("SUPABASE_ANON_KEY")
+        # Try to get environment variables from Railway first, then fall back to .env
+        self.url = os.environ.get("SUPABASE_URL") or os.getenv("SUPABASE_URL")
+        self.key = os.environ.get("SUPABASE_ANON_KEY") or os.getenv("SUPABASE_ANON_KEY")
+        
+        print(f"🔍 Checking environment variables...")
+        print(f"  SUPABASE_URL: {'✅ Found' if self.url else '❌ Missing'}")
+        print(f"  SUPABASE_ANON_KEY: {'✅ Found' if self.key else '❌ Missing'}")
         
         if not self.url or not self.key:
-            raise ValueError("SUPABASE_URL and SUPABASE_ANON_KEY must be set in .env file")
+            print("❌ Missing Supabase credentials")
+            print("   For Railway: Set environment variables in Railway dashboard")
+            print("   For local: Check .env file")
+            raise ValueError("SUPABASE_URL and SUPABASE_ANON_KEY must be set as environment variables")
         
-        self.client: Client = create_client(self.url, self.key)
+        try:
+            print(f"🔗 Connecting to Supabase...")
+            self.client: Client = create_client(self.url, self.key)
+            print("✅ Connected to Supabase successfully")
+        except Exception as e:
+            print(f"❌ Failed to connect to Supabase: {e}")
+            raise
     
     async def get_work_schedule(self, user_id: str) -> Optional[Dict[str, Any]]:
         """
