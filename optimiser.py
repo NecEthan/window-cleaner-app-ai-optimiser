@@ -390,10 +390,10 @@ def _assign_customers_to_day(customers: List[Dict], date: datetime.date, max_hou
 
 
 def _optimize_daily_route(customers: List[Dict], cleaner_start_location: Tuple[float, float]) -> Dict:
-    print(customers)
-    print('----------------')
-    print(cleaner_start_location)   
     """Optimize route for a single day's customers with time savings analysis"""
+    
+
+    
     if not customers:
         return {
             'customers': [],
@@ -424,11 +424,15 @@ def _optimize_daily_route(customers: List[Dict], cleaner_start_location: Tuple[f
         customer_idx = i - 1  # Adjust for cleaner start location
         if 0 <= customer_idx < len(customers):
             customer = customers[customer_idx]
-            optimized_customers.append({
-                **customer,
-                'route_order': len(optimized_customers) + 1,  # Add route position
-                'payment_method': customer.get('payment_method', 'card')  # Add payment method with card as default
-            })
+            
+            # Build optimized customer with all data preserved
+            optimized_customer = {
+                **customer,  # This spreads ALL customer data including phone
+                'route_order': len(optimized_customers) + 1,
+                'payment_method': customer.get('payment_method', 'card')
+            }
+            
+            optimized_customers.append(optimized_customer)
             total_duration += customer['estimated_duration']
             total_revenue += customer['price']
     
