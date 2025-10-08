@@ -1,0 +1,2 @@
+# This file indicates this is a Python project for Railway deployment
+# Railway should detect Python based on requirements.txt and this marker
